@@ -1,0 +1,398 @@
+commit acad89496685ccb0326c7cb86686127188310f7d
+Author: build <build@xenial>
+Date:   Mon Nov 25 13:01:48 2019 +0300
+
+    Add long-payment-id-support
+
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index ea8f6f2..3be358a 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -125,10 +125,12 @@ typedef cryptonote::simple_wallet sw;
+ 
+ #define LONG_PAYMENT_ID_SUPPORT_CHECK() \
+   do { \
+-    fail_msg_writer() << tr("Error: Long payment IDs are obsolete."); \
+-    fail_msg_writer() << tr("Long payment IDs were not encrypted on the blockchain and would harm your privacy."); \
+-    fail_msg_writer() << tr("If the party you're sending to still requires a long payment ID, please notify them."); \
+-    return true; \
++    if (!m_long_payment_id_support) { \
++      fail_msg_writer() << tr("Warning: Long payment IDs are obsolete."); \
++      fail_msg_writer() << tr("Long payment IDs are not encrypted on the blockchain, and will harm your privacy."); \
++      fail_msg_writer() << tr("Use --long-payment-id-support-bad-for-privacy if you really must use one, and warn the recipient they are using an obsolete feature that will disappear in the future."); \
++      return true; \
++    } \
+   } while(0)
+ 
+ #define REFRESH_PERIOD 90 // seconds
+@@ -169,6 +171,7 @@ namespace
+   const command_line::arg_descriptor<bool> arg_create_address_file = {"create-address-file", sw::tr("Create an address file for new wallets"), false};
+   const command_line::arg_descriptor<std::string> arg_subaddress_lookahead = {"subaddress-lookahead", tools::wallet2::tr("Set subaddress lookahead sizes to <major>:<minor>"), ""};
+   const command_line::arg_descriptor<bool> arg_use_english_language_names = {"use-english-language-names", sw::tr("Display English language names"), false};
++  const command_line::arg_descriptor<bool> arg_long_payment_id_support = {"long-payment-id-support-bad-for-privacy", sw::tr("Support obsolete long (unencrypted) payment ids (using them harms your privacy)"), false};
+ 
+   const command_line::arg_descriptor< std::vector<std::string> > arg_command = {"command", ""};
+ 
+@@ -2585,6 +2588,21 @@ bool simple_wallet::set_refresh_type(const std::vector<std::string> &args/* = st
+   return true;
+ }
+ 
++bool simple_wallet::set_confirm_missing_payment_id(const std::vector<std::string> &args/* = std::vector<std::string>()*/)
++{
++  LONG_PAYMENT_ID_SUPPORT_CHECK();
++
++  const auto pwd_container = get_and_verify_password();
++  if (pwd_container)
++  {
++    parse_bool_and_use(args[1], [&](bool r) {
++      m_wallet->confirm_missing_payment_id(r);
++      m_wallet->rewrite(m_wallet_file, pwd_container->password());
++    });
++  }
++  return true;
++}
++
+ bool simple_wallet::set_ask_password(const std::vector<std::string> &args/* = std::vector<std::string>()*/)
+ {
+   const auto pwd_container = get_and_verify_password();
+@@ -3631,6 +3649,7 @@ bool simple_wallet::set_variable(const std::vector<std::string> &args)
+     success_msg_writer() << "auto-refresh = " << m_wallet->auto_refresh();
+     success_msg_writer() << "refresh-type = " << get_refresh_type_name(m_wallet->get_refresh_type());
+     success_msg_writer() << "priority = " << priority<< " (" << priority_string << ")";
++    success_msg_writer() << "confirm-missing-payment-id = " << m_wallet->confirm_missing_payment_id();
+     success_msg_writer() << "ask-password = " << m_wallet->ask_password() << " (" << ask_password_string << ")";
+     success_msg_writer() << "unit = " << cryptonote::get_unit(cryptonote::get_default_decimal_point());
+     success_msg_writer() << "min-outputs-count = " << m_wallet->get_min_output_count();
+@@ -3700,6 +3719,7 @@ bool simple_wallet::set_variable(const std::vector<std::string> &args)
+     CHECK_SIMPLE_VARIABLE("auto-refresh", set_auto_refresh, tr("0 or 1"));
+     CHECK_SIMPLE_VARIABLE("refresh-type", set_refresh_type, tr("full (slowest, no assumptions); optimize-coinbase (fast, assumes the whole coinbase is paid to a single address); no-coinbase (fastest, assumes we receive no coinbase transaction), default (same as optimize-coinbase)"));
+     CHECK_SIMPLE_VARIABLE("priority", set_default_priority, tr("0, 1, 2, 3, or 4, or one of ") << join_priority_strings(", "));
++    CHECK_SIMPLE_VARIABLE("confirm-missing-payment-id", set_confirm_missing_payment_id, tr("0 or 1"));
+     CHECK_SIMPLE_VARIABLE("ask-password", set_ask_password, tr("0|1|2 (or never|action|decrypt)"));
+     CHECK_SIMPLE_VARIABLE("unit", set_unit, tr("monero, millinero, micronero, nanonero, piconero"));
+     CHECK_SIMPLE_VARIABLE("min-outputs-count", set_min_output_count, tr("unsigned integer"));
+@@ -4530,6 +4550,14 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
+   if (welcome)
+     message_writer(console_color_yellow, true) << tr("If you are new to Monero, type \"welcome\" for a brief overview.");
+ 
++  if (m_long_payment_id_support)
++  {
++    message_writer(console_color_red, false) <<
++        tr("WARNING: obsolete long payment IDs are enabled. Sending transactions with those payment IDs are bad for your privacy.");
++    message_writer(console_color_red, false) <<
++        tr("It is recommended that you do not use them, and ask recipients who ask for one to not endanger your privacy.");
++  }
++
+   m_last_activity_time = time(NULL);
+   return true;
+ }
+@@ -4563,6 +4591,7 @@ bool simple_wallet::handle_command_line(const boost::program_options::variables_
+   m_do_not_relay                  = command_line::get_arg(vm, arg_do_not_relay);
+   m_subaddress_lookahead          = command_line::get_arg(vm, arg_subaddress_lookahead);
+   m_use_english_language_names    = command_line::get_arg(vm, arg_use_english_language_names);
++  m_long_payment_id_support       = command_line::get_arg(vm, arg_long_payment_id_support);
+   m_restoring                     = !m_generate_from_view_key.empty() ||
+                                     !m_generate_from_spend_key.empty() ||
+                                     !m_generate_from_keys.empty() ||
+@@ -5458,7 +5487,7 @@ void simple_wallet::on_money_received(uint64_t height, const crypto::hash &txid,
+       }
+       else if (get_payment_id_from_tx_extra_nonce(extra_nonce.nonce, payment_id))
+         message_writer(console_color_red, false) <<
+-          tr("WARNING: this transaction uses an unencrypted payment ID: these are obsolete and ignored. Use subaddresses instead.");
++          (m_long_payment_id_support ? tr("WARNING: this transaction uses an unencrypted payment ID: consider using subaddresses instead.") : tr("WARNING: this transaction uses an unencrypted payment ID: these are obsolete. Support will be withdrawn in the future. Use subaddresses instead."));
+    }
+   }
+   if (unlock_time && !cryptonote::is_coinbase(tx))
+@@ -6428,6 +6457,20 @@ bool simple_wallet::transfer_main(int transfer_type, const std::vector<std::stri
+     dsts.push_back(de);
+   }
+ 
++  // prompt is there is no payment id and confirmation is required
++  if (m_long_payment_id_support && !payment_id_seen && m_wallet->confirm_missing_payment_id() && dsts.size() > num_subaddresses)
++  {
++     std::string accepted = input_line(tr("No payment id is included with this transaction. Is this okay?"), true);
++     if (std::cin.eof())
++       return false;
++     if (!command_line::is_yes(accepted))
++     {
++       fail_msg_writer() << tr("transaction cancelled.");
++
++       return false;
++     }
++  }
++
+   SCOPED_WALLET_UNLOCK_ON_BAD_PASSWORD(return false;);
+ 
+   try
+@@ -6989,6 +7032,20 @@ bool simple_wallet::sweep_main(uint64_t below, bool locked, const std::vector<st
+     payment_id_seen = true;
+   }
+ 
++  // prompt is there is no payment id and confirmation is required
++  if (m_long_payment_id_support && !payment_id_seen && m_wallet->confirm_missing_payment_id() && !info.is_subaddress)
++  {
++     std::string accepted = input_line(tr("No payment id is included with this transaction. Is this okay?"), true);
++     if (std::cin.eof())
++       return true;
++     if (!command_line::is_yes(accepted))
++     {
++       fail_msg_writer() << tr("transaction cancelled.");
++
++       return true; 
++     }
++  }
++
+   SCOPED_WALLET_UNLOCK();
+ 
+   try
+@@ -7247,6 +7304,22 @@ bool simple_wallet::sweep_single(const std::vector<std::string> &args_)
+     payment_id_seen = true;
+   }
+ 
++  // prompt if there is no payment id and confirmation is required
++  if (m_long_payment_id_support && !payment_id_seen && m_wallet->confirm_missing_payment_id() && !info.is_subaddress)
++  {
++     std::string accepted = input_line(tr("No payment id is included with this transaction. Is this okay?"), true);
++     if (std::cin.eof())
++       return true;
++     if (!command_line::is_yes(accepted))
++     {
++       fail_msg_writer() << tr("transaction cancelled.");
++
++       // would like to return false, because no tx made, but everything else returns true
++       // and I don't know what returning false might adversely affect.  *sigh*
++       return true; 
++     }
++  }
++
+   SCOPED_WALLET_UNLOCK();
+ 
+   try
+@@ -10169,6 +10242,7 @@ int main(int argc, char* argv[])
+   command_line::add_arg(desc_params, arg_subaddress_lookahead);
+   command_line::add_arg(desc_params, arg_use_english_language_names);
+   command_line::add_arg(desc_params, arg_rpc_client_secret_key);
++  command_line::add_arg(desc_params, arg_long_payment_id_support);
+ 
+   po::positional_options_description positional_options;
+   positional_options.add(arg_command.name, -1);
+diff --git a/src/simplewallet/simplewallet.h b/src/simplewallet/simplewallet.h
+index 75bd893..6295cdd 100644
+--- a/src/simplewallet/simplewallet.h
++++ b/src/simplewallet/simplewallet.h
+@@ -444,6 +444,8 @@ namespace cryptonote
+     std::atomic<bool> m_in_manual_refresh;
+     uint32_t m_current_subaddress_account;
+ 
++    bool m_long_payment_id_support;
++
+     std::atomic<time_t> m_last_activity_time;
+     std::atomic<bool> m_locked;
+     std::atomic<bool> m_in_command;
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index e60c6b7..81df0c2 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -1125,6 +1125,7 @@ wallet2::wallet2(network_type nettype, uint64_t kdf_rounds, bool unattended):
+   m_first_refresh_done(false),
+   m_refresh_from_block_height(0),
+   m_explicit_refresh_from_block_height(true),
++  m_confirm_missing_payment_id(true),
+   m_confirm_non_default_ring_size(true),
+   m_ask_password(AskPasswordToDecrypt),
+   m_min_output_count(0),
+@@ -3727,6 +3728,9 @@ bool wallet2::store_keys(const std::string& keys_file_name, const epee::wipeable
+   value2.SetUint64(m_refresh_from_block_height);
+   json.AddMember("refresh_height", value2, json.GetAllocator());
+ 
++  value2.SetInt(m_confirm_missing_payment_id ? 1 :0);
++  json.AddMember("confirm_missing_payment_id", value2, json.GetAllocator());
++
+   value2.SetInt(m_confirm_non_default_ring_size ? 1 :0);
+   json.AddMember("confirm_non_default_ring_size", value2, json.GetAllocator());
+ 
+@@ -3933,6 +3937,7 @@ bool wallet2::load_keys(const std::string& keys_file_name, const epee::wipeable_
+     m_auto_refresh = true;
+     m_refresh_type = RefreshType::RefreshDefault;
+     m_refresh_from_block_height = 0;
++    m_confirm_missing_payment_id = true;
+     m_confirm_non_default_ring_size = true;
+     m_ask_password = AskPasswordToDecrypt;
+     cryptonote::set_default_decimal_point(CRYPTONOTE_DISPLAY_DECIMAL_POINT);
+@@ -4072,6 +4077,8 @@ bool wallet2::load_keys(const std::string& keys_file_name, const epee::wipeable_
+     }
+     GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, refresh_height, uint64_t, Uint64, false, 0);
+     m_refresh_from_block_height = field_refresh_height;
++    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, confirm_missing_payment_id, int, Int, false, true);
++    m_confirm_missing_payment_id = field_confirm_missing_payment_id;
+     GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, confirm_non_default_ring_size, int, Int, false, true);
+     m_confirm_non_default_ring_size = field_confirm_non_default_ring_size;
+     GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, ask_password, AskPasswordType, Int, false, AskPasswordToDecrypt);
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index c86315f..7e12bb5 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1035,6 +1035,8 @@ private:
+     void set_default_priority(uint32_t p) { m_default_priority = p; }
+     bool auto_refresh() const { return m_auto_refresh; }
+     void auto_refresh(bool r) { m_auto_refresh = r; }
++    bool confirm_missing_payment_id() const { return m_confirm_missing_payment_id; }
++    void confirm_missing_payment_id(bool always) { m_confirm_missing_payment_id = always; }
+     AskPasswordType ask_password() const { return m_ask_password; }
+     void ask_password(AskPasswordType ask) { m_ask_password = ask; }
+     void set_min_output_count(uint32_t count) { m_min_output_count = count; }
+@@ -1545,6 +1547,7 @@ private:
+     // If m_refresh_from_block_height is explicitly set to zero we need this to differentiate it from the case that
+     // m_refresh_from_block_height was defaulted to zero.*/
+     bool m_explicit_refresh_from_block_height;
++    bool m_confirm_missing_payment_id;
+     bool m_confirm_non_default_ring_size;
+     AskPasswordType m_ask_password;
+     uint32_t m_min_output_count;
+diff --git a/src/wallet/wallet_rpc_server.cpp b/src/wallet/wallet_rpc_server.cpp
+index de501f0..3e1fda6 100644
+--- a/src/wallet/wallet_rpc_server.cpp
++++ b/src/wallet/wallet_rpc_server.cpp
+@@ -793,9 +793,30 @@ namespace tools
+ 
+     if (!payment_id.empty())
+     {
+-      er.code = WALLET_RPC_ERROR_CODE_WRONG_PAYMENT_ID;
+-      er.message = "Standalone payment IDs are obsolete. Use subaddresses or integrated addresses instead";
+-      return false;
++
++      /* Just to clarify */
++      const std::string& payment_id_str = payment_id;
++
++      crypto::hash long_payment_id;
++      crypto::hash8 short_payment_id;
++
++      /* Parse payment ID */
++      if (wallet2::parse_long_payment_id(payment_id_str, long_payment_id)) {
++        cryptonote::set_payment_id_to_tx_extra_nonce(extra_nonce, long_payment_id);
++      }
++      else {
++        er.code = WALLET_RPC_ERROR_CODE_WRONG_PAYMENT_ID;
++        er.message = "Payment id has invalid format: \"" + payment_id_str + "\", expected 64 character string";
++        return false;
++      }
++
++      /* Append Payment ID data into extra */
++      if (!cryptonote::add_extra_nonce_to_tx_extra(extra, extra_nonce)) {
++        er.code = WALLET_RPC_ERROR_CODE_WRONG_PAYMENT_ID;
++        er.message = "Something went wrong with payment_id. Please check its format: \"" + payment_id_str + "\", expected 64-character string";
++        return false;
++      }
++
+     }
+     return true;
+   }
+diff --git a/tests/functional_tests/cold_signing.py b/tests/functional_tests/cold_signing.py
+index 6982174..f915df7 100755
+--- a/tests/functional_tests/cold_signing.py
++++ b/tests/functional_tests/cold_signing.py
+@@ -94,6 +94,7 @@ class ColdSigningTest():
+         print("Creating transaction in hot wallet")
+ 
+         dst = {'address': '42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm', 'amount': 1000000000000}
++        payment_id = '1234500000012345abcde00000abcdeff1234500000012345abcde00000abcde'
+ 
+         self.hot_wallet.refresh()
+         res = self.hot_wallet.export_outputs()
+@@ -101,7 +102,7 @@ class ColdSigningTest():
+         res = self.cold_wallet.export_key_images(True)
+         self.hot_wallet.import_key_images(res.signed_key_images, offset = res.offset)
+ 
+-        res = self.hot_wallet.transfer([dst], ring_size = 11, get_tx_key = False)
++        res = self.hot_wallet.transfer([dst], ring_size = 11, payment_id = payment_id, get_tx_key = False)
+         assert len(res.tx_hash) == 32*2
+         txid = res.tx_hash
+         assert len(res.tx_key) == 0
+@@ -123,7 +124,7 @@ class ColdSigningTest():
+         assert desc.amount_out == desc.amount_in - fee
+         assert desc.ring_size == 11
+         assert desc.unlock_time == 0
+-        assert desc.payment_id in ['', '0000000000000000']
++        assert desc.payment_id == payment_id
+         assert desc.change_amount == desc.amount_in - 1000000000000 - fee
+         assert desc.change_address == '42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm'
+         assert desc.fee == fee
+diff --git a/tests/functional_tests/transfer.py b/tests/functional_tests/transfer.py
+index 0c942f4..f8b345f 100755
+--- a/tests/functional_tests/transfer.py
++++ b/tests/functional_tests/transfer.py
+@@ -114,19 +114,13 @@ class TransferTest():
+         except: ok = True
+         assert ok
+ 
+-        print ('Checking long payment IDs are rejected')
+-        ok = False
+-        try: self.wallet[0].transfer([dst], ring_size = 11, payment_id = payment_id, get_tx_key = False, get_tx_hex = True)
+-        except: ok = True
+-        assert ok
+-
+         print ('Checking empty destination is rejected')
+         ok = False
+         try: self.wallet[0].transfer([], ring_size = 11, get_tx_key = False)
+         except: ok = True
+         assert ok
+ 
+-        res = self.wallet[0].transfer([dst], ring_size = 11, get_tx_key = False, get_tx_hex = True)
++        res = self.wallet[0].transfer([dst], ring_size = 11, payment_id = payment_id, get_tx_key = False, get_tx_hex = True)
+         assert len(res.tx_hash) == 32*2
+         txid = res.tx_hash
+         assert len(res.tx_key) == 0
+@@ -162,7 +156,7 @@ class TransferTest():
+           assert e.type == 'block'
+         e = res.pending[0]
+         assert e.txid == txid
+-        assert e.payment_id in ['', '0000000000000000']
++        assert e.payment_id == payment_id
+         assert e.type == 'pending'
+         assert e.unlock_time == 0
+         assert e.subaddr_index.major == 0
+@@ -195,7 +189,7 @@ class TransferTest():
+           assert e.type == 'block'
+         e = res.out[0]
+         assert e.txid == txid
+-        assert e.payment_id in ['', '0000000000000000']
++        assert e.payment_id == payment_id
+         assert e.type == 'out'
+         assert e.unlock_time == 0
+         assert e.subaddr_index.major == 0
+@@ -211,7 +205,7 @@ class TransferTest():
+         assert res.transfers[0] == res.transfer
+         t = res.transfer
+         assert t.txid == txid
+-        assert t.payment_id in ['', '0000000000000000']
++        assert t.payment_id == payment_id
+         assert t.height == wallet_height - 1
+         assert t.timestamp > 0
+         assert t.amount == 0 # to self, so it's just "pay a fee" really
+@@ -233,7 +227,7 @@ class TransferTest():
+         print("Creating transfer to another, manual relay")
+ 
+         dst = {'address': '44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW', 'amount': 1000000000000}
+-        res = self.wallet[0].transfer([dst], ring_size = 11, get_tx_key = True, do_not_relay = True, get_tx_hex = True)
++        res = self.wallet[0].transfer([dst], ring_size = 11, payment_id = payment_id, get_tx_key = True, do_not_relay = True, get_tx_hex = True)
+         assert len(res.tx_hash) == 32*2
+         txid = res.tx_hash
+         assert len(res.tx_key) == 32*2
+@@ -324,7 +318,7 @@ class TransferTest():
+         dst0 = {'address': '42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm', 'amount': 1000000000000}
+         dst1 = {'address': '44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW', 'amount': 1100000000000}
+         dst2 = {'address': '46r4nYSevkfBUMhuykdK3gQ98XDqDTYW1hNLaXNvjpsJaSbNtdXh1sKMsdVgqkaihChAzEy29zEDPMR3NHQvGoZCLGwTerK', 'amount': 1200000000000}
+-        res = self.wallet[0].transfer([dst0, dst1, dst2], ring_size = 11, get_tx_key = True)
++        res = self.wallet[0].transfer([dst0, dst1, dst2], ring_size = 11, payment_id = payment_id, get_tx_key = True)
+         assert len(res.tx_hash) == 32*2
+         txid = res.tx_hash
+         assert len(res.tx_key) == 32*2
+@@ -363,7 +357,7 @@ class TransferTest():
+         assert len(e) == 1
+         e = e[0]
+         assert e.txid == txid
+-        assert e.payment_id in ["", "0000000000000000"] # long payment IDs are now ignored
++        assert e.payment_id == payment_id
+         assert e.type == 'out'
+         assert e.unlock_time == 0
+         assert e.subaddr_index.major == 0
